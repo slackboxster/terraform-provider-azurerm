@@ -26,6 +26,7 @@ type Client struct {
 	ServerSecurityAlertPoliciesClient                  *sql.ServerSecurityAlertPoliciesClient
 	ServerVulnerabilityAssessmentsClient               *sql.ServerVulnerabilityAssessmentsClient
 	ServersClient                                      *sql.ServersClient
+	TransparentDataEncryptionsClient                   *sql.TransparentDataEncryptionsClient
 	VirtualMachinesClient                              *sqlvirtualmachine.SQLVirtualMachinesClient
 	VirtualNetworkRulesClient                          *sql.VirtualNetworkRulesClient
 	GeoBackupPoliciesClient                            *sql.GeoBackupPoliciesClient
@@ -106,6 +107,9 @@ func NewClient(o *common.ClientOptions) *Client {
 	sqlServerKeysClient := sql.NewServerKeysClientWithBaseURI(o.ResourceManagerEndpoint, o.SubscriptionId)
 	o.ConfigureClient(&sqlServerKeysClient.Client, o.ResourceManagerAuthorizer)
 
+	sqlTransparentDataEncryptionsClient := sql.NewTransparentDataEncryptionsClientWithBaseURI(o.ResourceManagerEndpoint, o.SubscriptionId)
+	o.ConfigureClient(&sqlTransparentDataEncryptionsClient.Client, o.ResourceManagerAuthorizer)
+
 	return &Client{
 		LongTermRetentionPoliciesClient:                    &LongTermRetentionPoliciesClient,
 		BackupShortTermRetentionPoliciesClient:             &BackupShortTermRetentionPoliciesClient,
@@ -127,6 +131,7 @@ func NewClient(o *common.ClientOptions) *Client {
 		ServerConnectionPoliciesClient:                     &serverConnectionPoliciesClient,
 		ServerSecurityAlertPoliciesClient:                  &serverSecurityAlertPoliciesClient,
 		ServerVulnerabilityAssessmentsClient:               &serverVulnerabilityAssessmentsClient,
+		TransparentDataEncryptionsClient:                   &sqlTransparentDataEncryptionsClient,
 		VirtualMachinesClient:                              &sqlVirtualMachinesClient,
 		VirtualNetworkRulesClient:                          &sqlVirtualNetworkRulesClient,
 		GeoBackupPoliciesClient:                            &geoBackupPoliciesClient,
