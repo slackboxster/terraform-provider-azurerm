@@ -680,7 +680,7 @@ func TestAccMsSqlDatabase_transitDataEncryption(t *testing.T) {
 			Config: r.withTransitDataEncryptionOnDwSku(data, true),
 			Check: acceptance.ComposeTestCheckFunc(
 				check.That(data.ResourceName).ExistsInAzure(r),
-				check.That(data.ResourceName).Key("transparent_data_encryption").HasValue("true"),
+				check.That(data.ResourceName).Key("transparent_data_encryption_enabled").HasValue("true"),
 			),
 		},
 		data.ImportStep(),
@@ -688,7 +688,7 @@ func TestAccMsSqlDatabase_transitDataEncryption(t *testing.T) {
 			Config: r.withTransitDataEncryptionOnDwSku(data, false),
 			Check: acceptance.ComposeTestCheckFunc(
 				check.That(data.ResourceName).ExistsInAzure(r),
-				check.That(data.ResourceName).Key("transparent_data_encryption").HasValue("false"),
+				check.That(data.ResourceName).Key("transparent_data_encryption_enabled").HasValue("false"),
 			),
 		},
 		data.ImportStep(),
@@ -1640,7 +1640,7 @@ resource "azurerm_mssql_database" "test" {
   name                        = "acctest-db-%d"
   server_id                   = azurerm_mssql_server.test.id
   sku_name                    = "DW100c"
-  transparent_data_encryption = %t
+  transparent_data_encryption_enabled = %t
 }
 
 `, r.template(data), data.RandomInteger, state)
