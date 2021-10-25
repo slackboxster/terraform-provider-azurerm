@@ -5,7 +5,7 @@ package validate
 import (
 	"fmt"
 
-	"github.com/hashicorp/terraform-provider-azurerm/internal/services/servicefabricmanagementclient/parse"
+	"github.com/hashicorp/terraform-provider-azurerm/internal/services/servicefabricmanaged/parse"
 )
 
 func ServiceFabricManagedClusterID(input interface{}, key string) (warnings []string, errors []error) {
