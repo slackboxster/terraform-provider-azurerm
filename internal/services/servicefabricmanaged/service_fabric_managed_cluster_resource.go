@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strconv"
 	"time"
 
 	"github.com/hashicorp/terraform-provider-azurerm/helpers/azure"
@@ -32,9 +33,6 @@ type LBRule struct {
 }
 
 type Networking struct {
-	ClientConnectionPort int64    `tfschema:"client_connection_port"`
-	HTTPGatewayPort      int64    `tfschema:"http_gateway_port"`
-	LBRules              []LBRule `tfschema:"lb_rules"`
 }
 
 type ThumbprintAuth struct {
@@ -74,7 +72,9 @@ var _ sdk.ResourceWithUpdate = ClusterResource{}
 
 type ClusterResourceModel struct {
 	BackupRestoreService bool   `tfschema:"backup_restore_service"`
+	ClientConnectionPort int64  `tfschema:"client_connection_port"`
 	DNSService           bool   `tfschema:"dns_service"`
+	HTTPGatewayPort      int64  `tfschema:"http_gateway_port"`
 	Location             string `tfschema:"location"`
 	Name                 string `tfschema:"name"`
 	Username             string `tfschema:"username"`
@@ -83,6 +83,7 @@ type ClusterResourceModel struct {
 
 	Authentication       Authentication                       `tfschema:"authentication"`
 	CustomFabricSettings []CustomFabricSetting                `tfschema:"custom_fabric_settings"`
+	LBRules              []LBRule                             `tfschema:"lb_rules"`
 	Networking           Networking                           `tfschema:"networking"`
 	NodeTypes            []NodeType                           `tfschema:"node_type"`
 	Sku                  managedcluster.SkuName               `tfschema:"sku"`
@@ -237,61 +238,52 @@ func (k ClusterResource) Arguments() map[string]*pluginsdk.Schema {
 				},
 			},
 		},
-		"networking": {
-			Type:     pluginsdk.TypeList,
-			MaxItems: 1,
+		"client_connection_port": {
+			Type:         pluginsdk.TypeInt,
+			Required:     true,
+			ValidateFunc: validation.IntBetween(1500, 65535),
+		},
+		"http_gateway_port": {
+			Type:         pluginsdk.TypeInt,
+			Required:     true,
+			ValidateFunc: validation.IntBetween(1500, 65535),
+		},
+		"lb_rules": {
+			Type:     pluginsdk.TypeSet,
 			Required: true,
 			Elem: &pluginsdk.Resource{
 				Schema: map[string]*pluginsdk.Schema{
-					"client_connection_port": {
+					"backend_port": {
 						Type:         pluginsdk.TypeInt,
 						Required:     true,
-						ValidateFunc: validation.IntBetween(1500, 65535),
+						ValidateFunc: validation.IntBetween(1, 65535),
 					},
-					"http_gateway_port": {
+					"frontend_port": {
 						Type:         pluginsdk.TypeInt,
 						Required:     true,
-						ValidateFunc: validation.IntBetween(1500, 65535),
+						ValidateFunc: validation.IntBetween(1, 65535),
 					},
-					"lb_rules": {
-						Type:     pluginsdk.TypeSet,
+					"probe_protocol": {
+						Type:     pluginsdk.TypeString,
 						Required: true,
-						Elem: &pluginsdk.Resource{
-							Schema: map[string]*pluginsdk.Schema{
-								"backend_port": {
-									Type:         pluginsdk.TypeInt,
-									Required:     true,
-									ValidateFunc: validation.IntBetween(1, 65535),
-								},
-								"frontend_port": {
-									Type:         pluginsdk.TypeInt,
-									Required:     true,
-									ValidateFunc: validation.IntBetween(1, 65535),
-								},
-								"probe_protocol": {
-									Type:     pluginsdk.TypeString,
-									Required: true,
-									ValidateFunc: validation.StringInSlice([]string{
-										string(managedcluster.ProbeProtocolHttp),
-										string(managedcluster.ProbeProtocolHttps),
-										string(managedcluster.ProbeProtocolTcp),
-									}, false),
-								},
-								"probe_request_path": {
-									Type:         pluginsdk.TypeString,
-									Required:     true,
-									ValidateFunc: validation.StringIsNotWhiteSpace,
-								},
-								"protocol": {
-									Type:     pluginsdk.TypeString,
-									Required: true,
-									ValidateFunc: validation.StringInSlice([]string{
-										string(managedcluster.ProtocolTcp),
-										string(managedcluster.ProtocolUdp),
-									}, false),
-								},
-							},
-						},
+						ValidateFunc: validation.StringInSlice([]string{
+							string(managedcluster.ProbeProtocolHttp),
+							string(managedcluster.ProbeProtocolHttps),
+							string(managedcluster.ProbeProtocolTcp),
+						}, false),
+					},
+					"probe_request_path": {
+						Type:         pluginsdk.TypeString,
+						Required:     true,
+						ValidateFunc: validation.StringIsNotWhiteSpace,
+					},
+					"protocol": {
+						Type:     pluginsdk.TypeString,
+						Required: true,
+						ValidateFunc: validation.StringInSlice([]string{
+							string(managedcluster.ProtocolTcp),
+							string(managedcluster.ProtocolUdp),
+						}, false),
 					},
 				},
 			},
@@ -467,13 +459,13 @@ func flattenClusterProperties(properties *managedcluster.ManagedClusterPropertie
 		}
 	}
 
-	model.Networking.ClientConnectionPort = utils.NormaliseNilableInt64(properties.ClientConnectionPort)
-	model.Networking.HTTPGatewayPort = utils.NormaliseNilableInt64(properties.HttpGatewayConnectionPort)
+	model.ClientConnectionPort = utils.NormaliseNilableInt64(properties.ClientConnectionPort)
+	model.HTTPGatewayPort = utils.NormaliseNilableInt64(properties.HttpGatewayConnectionPort)
 
 	if lbrules := properties.LoadBalancingRules; lbrules != nil {
-		model.Networking.LBRules = make([]LBRule, len(*lbrules))
+		model.LBRules = make([]LBRule, len(*lbrules))
 		for idx, rule := range *lbrules {
-			model.Networking.LBRules[idx] = LBRule{
+			model.LBRules[idx] = LBRule{
 				BackendPort:      rule.BackendPort,
 				FrontendPort:     rule.FrontendPort,
 				ProbeProtocol:    rule.ProbeProtocol,
@@ -510,7 +502,7 @@ func expandClusterProperties(model *ClusterResourceModel) *managedcluster.Manage
 		}
 	}
 
-	out.ClientConnectionPort = &model.Networking.ClientConnectionPort
+	out.ClientConnectionPort = &model.ClientConnectionPort
 
 	if certs := model.Authentication.CertAuthentication; len(certs) > 0 {
 		clients := make([]managedcluster.ClientCertificate, len(certs))
@@ -553,22 +545,47 @@ func expandClusterProperties(model *ClusterResourceModel) *managedcluster.Manage
 		out.FabricSettings = &fs
 	}
 
-	out.HttpGatewayConnectionPort = &model.Networking.HTTPGatewayPort
+	out.HttpGatewayConnectionPort = &model.HTTPGatewayPort
 
-	if rules := model.Networking.LBRules; len(rules) > 0 {
-		lbRules := make([]managedcluster.LoadBalancingRule, 0)
-		for idx, rule := range lbRules {
+	if rules := model.LBRules; len(rules) > 0 {
+		lbRules := make([]managedcluster.LoadBalancingRule, len(rules))
+		nsRules := make([]managedcluster.NetworkSecurityRule, len(rules))
+
+		for idx, rule := range rules {
 			lbRules[idx] = managedcluster.LoadBalancingRule{
 				BackendPort:      rule.BackendPort,
 				FrontendPort:     rule.FrontendPort,
-				ProbePort:        rule.ProbePort,
 				ProbeProtocol:    rule.ProbeProtocol,
-				ProbeRequestPath: rule.ProbeRequestPath,
+				ProbeRequestPath: utils.String(rule.ProbeRequestPath),
 				Protocol:         rule.Protocol,
+			}
+
+			fePortStr := strconv.FormatInt(rule.FrontendPort, 10)
+			var sgProto managedcluster.NsgProtocol
+			switch rule.Protocol {
+			case managedcluster.ProtocolTcp:
+				sgProto = managedcluster.NsgProtocolTcp
+			case managedcluster.ProtocolUdp:
+				sgProto = managedcluster.NsgProtocolUdp
+			}
+			nsRules[idx] = managedcluster.NetworkSecurityRule{
+				Access:                     managedcluster.AccessAllow,
+				SourcePortRanges:           &[]string{"*"},
+				SourceAddressPrefixes:      &[]string{"*"},
+				DestinationPortRanges:      &[]string{fePortStr},
+				DestinationAddressPrefixes: &[]string{"*"},
+				Direction:                  managedcluster.DirectionInbound,
+				Name:                       fmt.Sprintf("rule%d-allow-fe", rule.FrontendPort),
+				Priority:                   1000,
+				Protocol:                   sgProto,
 			}
 		}
 		out.LoadBalancingRules = &lbRules
+		out.NetworkSecurityRules = &nsRules
+
 	}
+
+	out.DnsName = model.Name
 
 	return out
 }
