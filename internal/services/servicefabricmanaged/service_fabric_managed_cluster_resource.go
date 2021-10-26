@@ -85,7 +85,7 @@ type ClusterResourceModel struct {
 	CustomFabricSettings []CustomFabricSetting                `tfschema:"custom_fabric_settings"`
 	Networking           Networking                           `tfschema:"networking"`
 	NodeTypes            []NodeType                           `tfschema:"node_type"`
-	Sku                  managedcluster.Sku                   `tfschema:"sku"`
+	Sku                  managedcluster.SkuName               `tfschema:"sku"`
 	Tags                 map[string]interface{}               `tfschema:"tags"`
 	UpgradeWave          managedcluster.ClusterUpgradeCadence `tfschema:"upgrade_wave"`
 }
@@ -345,13 +345,15 @@ func (k ClusterResource) Create() sdk.ResourceFunc {
 
 			managedClusterId := managedcluster.NewManagedClusterID(subscriptionId, model.ResourceGroup, model.Name)
 
-			err := clusterClient.CreateOrUpdateThenPoll(ctx, managedClusterId, managedcluster.ManagedCluster{
+			cluster := managedcluster.ManagedCluster{
 				Location:   model.Location,
 				Name:       utils.String(model.Name),
 				Properties: expandClusterProperties(&model),
-				Sku:        &model.Sku,
+				Sku:        &managedcluster.Sku{Name: model.Sku},
 				//Tags: tags.Expand(model.Tags),
-			})
+			}
+
+			err := clusterClient.CreateOrUpdateThenPoll(ctx, managedClusterId, cluster)
 			if err != nil {
 				return fmt.Errorf("while creating cluster %q: %+v", model.Name, err)
 			}
@@ -383,7 +385,7 @@ func (k ClusterResource) Read() sdk.ResourceFunc {
 			model.ResourceGroup = resourceId.ResourceGroup
 
 			if sku := cluster.Model.Sku; sku != nil {
-				model.Sku = *sku
+				model.Sku = sku.Name
 			}
 
 			return metadata.Encode(&model)
