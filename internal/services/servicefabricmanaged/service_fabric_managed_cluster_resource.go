@@ -2,14 +2,19 @@ package servicefabricmanaged
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"time"
 
+	"github.com/hashicorp/terraform-provider-azurerm/helpers/azure"
 	"github.com/hashicorp/terraform-provider-azurerm/internal/sdk"
+	"github.com/hashicorp/terraform-provider-azurerm/internal/services/servicefabricmanaged/sdk/2021-05-01/managedcluster"
 	"github.com/hashicorp/terraform-provider-azurerm/internal/services/servicefabricmanaged/validate"
 	"github.com/hashicorp/terraform-provider-azurerm/internal/tags"
 	"github.com/hashicorp/terraform-provider-azurerm/internal/tf/pluginsdk"
 	"github.com/hashicorp/terraform-provider-azurerm/internal/tf/validation"
+	"github.com/hashicorp/terraform-provider-azurerm/internal/timeouts"
+	"github.com/hashicorp/terraform-provider-azurerm/utils"
 )
 
 type CustomFabricSetting struct {
@@ -19,16 +24,16 @@ type CustomFabricSetting struct {
 }
 
 type LBRule struct {
-	BackendPort      int          `tfschema:"backend_port"`
-	FrontendPort     int          `tfschema:"frontend_port"`
-	ProbeProtocol    LBProbeProto `tfschema:"probe_protocol"`
-	ProbeRequestPath string       `tfschema:"ProbeRequestPath"`
-	Protocol         LBProto      `tfschema:"protocol"`
+	BackendPort      int64                        `tfschema:"backend_port"`
+	FrontendPort     int64                        `tfschema:"frontend_port"`
+	ProbeProtocol    managedcluster.ProbeProtocol `tfschema:"probe_protocol"`
+	ProbeRequestPath string                       `tfschema:"ProbeRequestPath"`
+	Protocol         managedcluster.Protocol      `tfschema:"protocol"`
 }
 
 type Networking struct {
-	ClientConnectionPort int      `tfschema:"client_connection_port"`
-	HTTPGatewayPort      int      `tfschema:"http_gateway_port"`
+	ClientConnectionPort int64    `tfschema:"client_connection_port"`
+	HTTPGatewayPort      int64    `tfschema:"http_gateway_port"`
 	LBRules              []LBRule `tfschema:"lb_rules"`
 }
 
@@ -55,34 +60,12 @@ type NodeType struct {
 	NodeSize     string `tfschema:"node_size"`
 	OSImage      string `tfschema:"os_image"`
 }
-type UpgradeWave string
-
-const (
-	UpgradeWave0 UpgradeWave = "Wave0"
-	UpgradeWave1 UpgradeWave = "Wave1"
-	UpgradeWave2 UpgradeWave = "Wave2"
-)
-
-type LBProto string
-
-const (
-	LBProtoTCP LBProto = "TCP"
-	LBProtoUDP LBProto = "UDP"
-)
-
-type LBProbeProto string
-
-const (
-	LBProbeProtoHTTP  = "HTTP"
-	LBProbeProtoHTTPS = "HTTPS"
-	LBProbeProtoTCP   = "TCP"
-)
 
 type CertType string
 
 const (
-	Admin    CertType = "AdminClient"
-	ReadOnly CertType = "ReadOnlyClient"
+	CertTypeAdmin    CertType = "AdminClient"
+	CertTypeReadOnly CertType = "ReadOnlyClient"
 )
 
 type ClusterResource struct{}
@@ -92,17 +75,19 @@ var _ sdk.ResourceWithUpdate = ClusterResource{}
 type ClusterResourceModel struct {
 	BackupRestoreService bool   `tfschema:"backup_restore_service"`
 	DNSService           bool   `tfschema:"dns_service"`
+	Location             string `tfschema:"location"`
 	Name                 string `tfschema:"name"`
 	Username             string `tfschema:"username"`
 	Password             string `tfschema:"password"`
 	ResourceGroup        string `tfschema:"resource_group"`
 
-	Authentication       Authentication         `tfschema:"authentication"`
-	CustomFabricSettings []CustomFabricSetting  `tfschema:"custom_fabric_settings"`
-	Networking           Networking             `tfschema:"networking"`
-	NodeTypes            []NodeType             `tfschema:"node_type"`
-	Tags                 map[string]interface{} `tfschema:"tags"`
-	UpgradeWave          UpgradeWave            `tfschema:"upgrade_wave"`
+	Authentication       Authentication                       `tfschema:"authentication"`
+	CustomFabricSettings []CustomFabricSetting                `tfschema:"custom_fabric_settings"`
+	Networking           Networking                           `tfschema:"networking"`
+	NodeTypes            []NodeType                           `tfschema:"node_type"`
+	Sku                  managedcluster.Sku                   `tfschema:"sku"`
+	Tags                 map[string]interface{}               `tfschema:"tags"`
+	UpgradeWave          managedcluster.ClusterUpgradeCadence `tfschema:"upgrade_wave"`
 }
 
 func (k ClusterResource) Arguments() map[string]*pluginsdk.Schema {
@@ -115,6 +100,7 @@ func (k ClusterResource) Arguments() map[string]*pluginsdk.Schema {
 			Type:     pluginsdk.TypeBool,
 			Optional: true,
 		},
+		"location": azure.SchemaLocation(),
 		"name": {
 			Type:     pluginsdk.TypeString,
 			Required: true,
@@ -218,8 +204,8 @@ func (k ClusterResource) Arguments() map[string]*pluginsdk.Schema {
 									Type:     pluginsdk.TypeString,
 									Required: true,
 									ValidateFunc: validation.StringInSlice([]string{
-										string(Admin),
-										string(ReadOnly),
+										string(CertTypeAdmin),
+										string(CertTypeReadOnly),
 									}, false),
 								},
 							},
@@ -285,9 +271,9 @@ func (k ClusterResource) Arguments() map[string]*pluginsdk.Schema {
 									Type:     pluginsdk.TypeString,
 									Required: true,
 									ValidateFunc: validation.StringInSlice([]string{
-										string(LBProbeProtoHTTP),
-										string(LBProbeProtoHTTPS),
-										string(LBProbeProtoTCP),
+										string(managedcluster.ProbeProtocolHttp),
+										string(managedcluster.ProbeProtocolHttps),
+										string(managedcluster.ProbeProtocolTcp),
 									}, false),
 								},
 								"probe_request_path": {
@@ -299,8 +285,8 @@ func (k ClusterResource) Arguments() map[string]*pluginsdk.Schema {
 									Type:     pluginsdk.TypeString,
 									Required: true,
 									ValidateFunc: validation.StringInSlice([]string{
-										string(LBProtoTCP),
-										string(LBProtoUDP),
+										string(managedcluster.ProtocolTcp),
+										string(managedcluster.ProtocolUdp),
 									}, false),
 								},
 							},
@@ -309,15 +295,24 @@ func (k ClusterResource) Arguments() map[string]*pluginsdk.Schema {
 				},
 			},
 		},
+		"sku": {
+			Type:     pluginsdk.TypeString,
+			Optional: true,
+			Default:  "free",
+			ValidateFunc: validation.StringInSlice([]string{
+				string(managedcluster.SkuNameBasic),
+				string(managedcluster.SkuNameStandard),
+			}, false),
+		},
 		"tags": tags.Schema(),
 		"upgrade_wave": {
 			Type:     pluginsdk.TypeString,
 			Required: true,
-			Default:  UpgradeWave0,
+			Default:  managedcluster.ClusterUpgradeCadenceWaveZero,
 			ValidateFunc: validation.StringInSlice([]string{
-				string(UpgradeWave0),
-				string(UpgradeWave1),
-				string(UpgradeWave2)}, false),
+				string(managedcluster.ClusterUpgradeCadenceWaveZero),
+				string(managedcluster.ClusterUpgradeCadenceWaveOne),
+				string(managedcluster.ClusterUpgradeCadenceWaveTwo)}, false),
 		},
 	}
 }
@@ -337,6 +332,30 @@ func (k ClusterResource) ResourceType() string {
 func (k ClusterResource) Create() sdk.ResourceFunc {
 	return sdk.ResourceFunc{
 		Func: func(ctx context.Context, metadata sdk.ResourceMetaData) error {
+			var model ClusterResourceModel
+			if err := metadata.Decode(&model); err != nil {
+				return fmt.Errorf("decoding %+v", err)
+			}
+			ctx, cancel := timeouts.ForCreate(metadata.Client.StopContext, metadata.ResourceData)
+			defer cancel()
+
+			clusterClient := metadata.Client.ServiceFabricManaged.ManagedClusterClient
+			subscriptionId := metadata.Client.Account.SubscriptionId
+
+			managedClusterId := managedcluster.NewManagedClusterID(subscriptionId, model.ResourceGroup, model.Name)
+
+			err := clusterClient.CreateOrUpdateThenPoll(ctx, managedClusterId, managedcluster.ManagedCluster{
+				Location:   model.Location,
+				Name:       utils.String(model.Name),
+				Properties: expandClusterProperties(&model),
+				Sku:        &model.Sku,
+				//Tags: tags.Expand(model.Tags),
+			})
+			if err != nil {
+				return fmt.Errorf("while creating cluster %q: %+v", model.Name, err)
+			}
+
+			metadata.SetID(managedClusterId)
 
 			return nil
 		},
@@ -347,7 +366,26 @@ func (k ClusterResource) Create() sdk.ResourceFunc {
 func (k ClusterResource) Read() sdk.ResourceFunc {
 	return sdk.ResourceFunc{
 		Func: func(ctx context.Context, metadata sdk.ResourceMetaData) error {
-			return nil
+			resourceId, err := managedcluster.ParseManagedClusterID(metadata.ResourceData.Id())
+			if err != nil {
+				return fmt.Errorf("while parsing resourceID: %+v", err)
+			}
+			clusterClient := metadata.Client.ServiceFabricManaged.ManagedClusterClient
+			cluster, err := clusterClient.Get(ctx, *resourceId)
+
+			// Most of the resource model's data lives in the Properties
+			model := flattenClusterProperties(cluster.Model.Properties)
+
+			// fill in the rest
+			model.Name = utils.NormalizeNilableString(cluster.Model.Name)
+			model.Location = cluster.Model.Location
+			model.ResourceGroup = resourceId.ResourceGroup
+
+			if sku := cluster.Model.Sku; sku != nil {
+				model.Sku = *sku
+			}
+
+			return metadata.Encode(&model)
 		},
 		Timeout: 5 * time.Minute,
 	}
@@ -375,6 +413,159 @@ func (k ClusterResource) IDValidationFunc() pluginsdk.SchemaValidateFunc {
 	return validate.ServiceFabricManagedClusterID
 }
 
-func flattenThing(d *pluginsdk.ResourceData) *ClusterResource {
+func flattenClusterProperties(properties *managedcluster.ManagedClusterProperties) *ClusterResourceModel {
+	model := &ClusterResourceModel{}
+
+	if features := properties.AddonFeatures; features != nil {
+		for _, feature := range *features {
+			if feature == managedcluster.AddonFeaturesDnsService {
+				model.DNSService = true
+			} else if feature == managedcluster.AddonFeaturesBackupRestoreService {
+				model.BackupRestoreService = true
+			}
+		}
+	}
+	model.Username = properties.AdminUserName
+	model.Password = utils.NormalizeNilableString(properties.AdminPassword)
+
+	if aad := properties.AzureActiveDirectory; aad != nil {
+		adModel := model.Authentication.ADAuth
+		adModel.ClientApp = utils.NormalizeNilableString(aad.ClientApplication)
+		adModel.ClusterApp = utils.NormalizeNilableString(aad.ClusterApplication)
+		adModel.TenantId = utils.NormalizeNilableString(aad.TenantId)
+	}
+
+	if clients := properties.Clients; clients != nil {
+		certs := make([]ThumbprintAuth, len(*clients))
+		for idx, client := range *clients {
+			t := CertTypeReadOnly
+			if client.IsAdmin {
+				t = CertTypeAdmin
+			}
+			certs[idx] = ThumbprintAuth{
+				CertificateType: t,
+				CommonName:      utils.NormalizeNilableString(client.CommonName),
+				Thumbprint:      utils.NormalizeNilableString(client.Thumbprint),
+			}
+		}
+		model.Authentication.CertAuthentication = certs
+	}
+
+	if fss := properties.FabricSettings; fss != nil {
+		cfs := make([]CustomFabricSetting, 0)
+		for _, fs := range *fss {
+			for _, param := range fs.Parameters {
+				cfs = append(cfs, CustomFabricSetting{
+					Parameter: fs.Name,
+					Section:   param.Name,
+					Value:     param.Value,
+				})
+			}
+		}
+	}
+
+	model.Networking.ClientConnectionPort = utils.NormaliseNilableInt64(properties.ClientConnectionPort)
+	model.Networking.HTTPGatewayPort = utils.NormaliseNilableInt64(properties.HttpGatewayConnectionPort)
+
+	if lbrules := properties.LoadBalancingRules; lbrules != nil {
+		model.Networking.LBRules = make([]LBRule, len(*lbrules))
+		for idx, rule := range *lbrules {
+			model.Networking.LBRules[idx] = LBRule{
+				BackendPort:      rule.BackendPort,
+				FrontendPort:     rule.FrontendPort,
+				ProbeProtocol:    rule.ProbeProtocol,
+				ProbeRequestPath: utils.NormalizeNilableString(rule.ProbeRequestPath),
+				Protocol:         rule.Protocol,
+			}
+		}
+	}
+
 	return nil
+}
+
+func expandClusterProperties(model *ClusterResourceModel) *managedcluster.ManagedClusterProperties {
+	out := &managedcluster.ManagedClusterProperties{}
+
+	addons := make([]managedcluster.AddonFeatures, 0)
+	if model.DNSService {
+		addons = append(addons, managedcluster.AddonFeaturesDnsService)
+	}
+	if model.BackupRestoreService {
+		addons = append(addons, managedcluster.AddonFeaturesBackupRestoreService)
+	}
+	out.AddonFeatures = &addons
+
+	out.AdminPassword = utils.String(model.Password)
+	out.AdminUserName = model.Username
+
+	adAuth := model.Authentication.ADAuth
+	if adAuth.ClientApp != "" && adAuth.ClusterApp != "" && adAuth.TenantId != "" {
+		out.AzureActiveDirectory = &managedcluster.AzureActiveDirectory{
+			ClientApplication:  utils.String(adAuth.ClientApp),
+			ClusterApplication: utils.String(adAuth.ClusterApp),
+			TenantId:           utils.String(adAuth.TenantId),
+		}
+	}
+
+	out.ClientConnectionPort = &model.Networking.ClientConnectionPort
+
+	if certs := model.Authentication.CertAuthentication; len(certs) > 0 {
+		clients := make([]managedcluster.ClientCertificate, len(certs))
+		for idx, cert := range certs {
+			clients[idx] = managedcluster.ClientCertificate{
+				CommonName: utils.String(cert.CommonName),
+				IsAdmin:    cert.CertificateType == CertTypeAdmin,
+				Thumbprint: utils.String(cert.Thumbprint),
+			}
+		}
+		out.Clients = &clients
+	}
+
+	out.ClusterUpgradeCadence = &model.UpgradeWave
+
+	if customSettings := model.CustomFabricSettings; len(customSettings) > 0 {
+		fs := make([]managedcluster.SettingsSectionDescription, len(customSettings))
+
+		// First we build a map of all settings per section
+		fsMap := make(map[string][]managedcluster.SettingsParameterDescription)
+		for _, cs := range customSettings {
+			spd := managedcluster.SettingsParameterDescription{
+				Name:  cs.Parameter,
+				Value: cs.Value,
+			}
+			if v, ok := fsMap[cs.Section]; ok {
+				v = append(v, spd)
+			} else {
+				fsMap[cs.Section] = []managedcluster.SettingsParameterDescription{spd}
+			}
+		}
+
+		// Then we update the properties struct
+		for k, v := range fsMap {
+			fs = append(fs, managedcluster.SettingsSectionDescription{
+				Name:       k,
+				Parameters: v,
+			})
+		}
+		out.FabricSettings = &fs
+	}
+
+	out.HttpGatewayConnectionPort = &model.Networking.HTTPGatewayPort
+
+	if rules := model.Networking.LBRules; len(rules) > 0 {
+		lbRules := make([]managedcluster.LoadBalancingRule, 0)
+		for idx, rule := range lbRules {
+			lbRules[idx] = managedcluster.LoadBalancingRule{
+				BackendPort:      rule.BackendPort,
+				FrontendPort:     rule.FrontendPort,
+				ProbePort:        rule.ProbePort,
+				ProbeProtocol:    rule.ProbeProtocol,
+				ProbeRequestPath: rule.ProbeRequestPath,
+				Protocol:         rule.Protocol,
+			}
+		}
+		out.LoadBalancingRules = &lbRules
+	}
+
+	return out
 }
