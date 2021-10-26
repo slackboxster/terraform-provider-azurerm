@@ -27,7 +27,7 @@ type LBRule struct {
 	BackendPort      int64                        `tfschema:"backend_port"`
 	FrontendPort     int64                        `tfschema:"frontend_port"`
 	ProbeProtocol    managedcluster.ProbeProtocol `tfschema:"probe_protocol"`
-	ProbeRequestPath string                       `tfschema:"ProbeRequestPath"`
+	ProbeRequestPath string                       `tfschema:"probe_request_path"`
 	Protocol         managedcluster.Protocol      `tfschema:"protocol"`
 }
 
@@ -79,7 +79,7 @@ type ClusterResourceModel struct {
 	Name                 string `tfschema:"name"`
 	Username             string `tfschema:"username"`
 	Password             string `tfschema:"password"`
-	ResourceGroup        string `tfschema:"resource_group"`
+	ResourceGroup        string `tfschema:"resource_group_name"`
 
 	Authentication       Authentication                       `tfschema:"authentication"`
 	CustomFabricSettings []CustomFabricSetting                `tfschema:"custom_fabric_settings"`
@@ -122,7 +122,7 @@ func (k ClusterResource) Arguments() map[string]*pluginsdk.Schema {
 				validation.StringLenBetween(8, 123),
 				validation.StringIsNotWhiteSpace),
 		},
-		"resource_group": {
+		"resource_group_name": {
 			Type:         pluginsdk.TypeString,
 			Required:     true,
 			ValidateFunc: validation.StringIsNotWhiteSpace,
