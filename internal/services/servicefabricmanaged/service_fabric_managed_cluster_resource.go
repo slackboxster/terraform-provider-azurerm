@@ -129,7 +129,7 @@ func (k ClusterResource) Arguments() map[string]*pluginsdk.Schema {
 		},
 		"node_type": {
 			Type:     pluginsdk.TypeSet,
-			Required: true,
+			Optional: true,
 			Elem: &pluginsdk.Resource{
 				Schema: map[string]*pluginsdk.Schema{
 					"os_image": {
@@ -240,6 +240,7 @@ func (k ClusterResource) Arguments() map[string]*pluginsdk.Schema {
 		"networking": {
 			Type:     pluginsdk.TypeList,
 			MaxItems: 1,
+			Required: true,
 			Elem: &pluginsdk.Resource{
 				Schema: map[string]*pluginsdk.Schema{
 					"client_connection_port": {
@@ -307,7 +308,7 @@ func (k ClusterResource) Arguments() map[string]*pluginsdk.Schema {
 		"tags": tags.Schema(),
 		"upgrade_wave": {
 			Type:     pluginsdk.TypeString,
-			Required: true,
+			Optional: true,
 			Default:  managedcluster.ClusterUpgradeCadenceWaveZero,
 			ValidateFunc: validation.StringInSlice([]string{
 				string(managedcluster.ClusterUpgradeCadenceWaveZero),

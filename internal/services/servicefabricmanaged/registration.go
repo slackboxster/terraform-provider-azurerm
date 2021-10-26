@@ -11,13 +11,13 @@ var _ sdk.TypedServiceRegistration = Registration{}
 var _ sdk.UntypedServiceRegistration = Registration{}
 
 func (r Registration) DataSources() []sdk.DataSource {
-	return []sdk.DataSource{
-		ClusterResource{},
-	}
+	return []sdk.DataSource{}
 }
 
 func (r Registration) Resources() []sdk.Resource {
-	return []sdk.Resource{}
+	return []sdk.Resource{
+		ClusterResource{},
+	}
 }
 
 // Name is the name of this Service
