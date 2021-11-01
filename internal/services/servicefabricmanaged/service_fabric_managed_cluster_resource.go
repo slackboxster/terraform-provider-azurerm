@@ -5,7 +5,14 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
+
+	"github.com/hashicorp/terraform-provider-azurerm/internal/timeouts"
+
+	"github.com/hashicorp/go-azure-helpers/response"
+
+	"github.com/hashicorp/terraform-provider-azurerm/internal/services/servicefabricmanaged/sdk/2021-05-01/nodetype"
 
 	"github.com/hashicorp/terraform-provider-azurerm/helpers/azure"
 	"github.com/hashicorp/terraform-provider-azurerm/internal/sdk"
@@ -14,7 +21,6 @@ import (
 	"github.com/hashicorp/terraform-provider-azurerm/internal/tags"
 	"github.com/hashicorp/terraform-provider-azurerm/internal/tf/pluginsdk"
 	"github.com/hashicorp/terraform-provider-azurerm/internal/tf/validation"
-	"github.com/hashicorp/terraform-provider-azurerm/internal/timeouts"
 	"github.com/hashicorp/terraform-provider-azurerm/utils"
 )
 
@@ -32,9 +38,6 @@ type LBRule struct {
 	Protocol         managedcluster.Protocol      `tfschema:"protocol"`
 }
 
-type Networking struct {
-}
-
 type ThumbprintAuth struct {
 	CertificateType CertType `tfschema:"type"`
 	CommonName      string   `tfschema:"common_name"`
@@ -48,15 +51,44 @@ type ADAuthentication struct {
 }
 
 type Authentication struct {
-	ADAuth             ADAuthentication `tfscherma:"active_directory"`
+	ADAuth             ADAuthentication `tfschema:"active_directory"`
 	CertAuthentication []ThumbprintAuth `tfschema:"certificate"`
 }
 
+type PortRange struct {
+	From int64 `tfschema:"from"`
+	To   int64 `tfschema:"to"`
+}
+
+type VaultCertificates struct {
+	Store string `tfschema:"store"`
+	Url   string `tfschema:"url"`
+}
+
+type VmSecrets struct {
+	SourceVault  string              `tfschema:"vault_id"`
+	Certificates []VaultCertificates `tfschema:"certificate"`
+}
+
 type NodeType struct {
-	DataDiskSize int    `tfschema:"data_disk_size"`
-	NodeCount    int    `tfschema:"node_count"`
-	NodeSize     string `tfschema:"node_size"`
-	OSImage      string `tfschema:"os_image"`
+	DataDiskSize            int64  `tfschema:"data_disk_size"`
+	MultiplePlacementGroups bool   `tfschema:"multiple_placement_groups"`
+	Name                    string `tfschema:"name"`
+	Primary                 bool   `tfschema:"primary"`
+	Stateless               bool   `tfschema:"stateless"`
+	VmImageOffer            string `tfschema:"vm_image_offer"`
+	VmImagePublisher        string `tfschema:"vm_image_publisher"`
+	VmImageSku              string `tfschema:"vm_image_sku"`
+	VmImageVersion          string `tfschema:"vm_image_version"`
+	VmInstanceCount         int64  `tfschema:"vm_instance_count"`
+	VmSize                  string `tfschema:"vm_size"`
+
+	ApplicationPorts    string            `tfschema:"application_port_range"`
+	Capacities          map[string]string `tfschema:"capacities"`
+	DataDiskType        nodetype.DiskType `tfschema:"data_disk_type"`
+	EphemeralPorts      string            `tfschema:"ephemeral_port_range"`
+	PlacementProperties map[string]string `tfschema:"placement_properties"`
+	VmSecrets           []VmSecrets       `tfschema:"vm_secrets"`
 }
 
 type CertType string
@@ -81,10 +113,9 @@ type ClusterResourceModel struct {
 	Password             string `tfschema:"password"`
 	ResourceGroup        string `tfschema:"resource_group_name"`
 
-	Authentication       Authentication                       `tfschema:"authentication"`
-	CustomFabricSettings []CustomFabricSetting                `tfschema:"custom_fabric_settings"`
+	Authentication       []Authentication                     `tfschema:"authentication"`
+	CustomFabricSettings []CustomFabricSetting                `tfschema:"custom_fabric_setting"`
 	LBRules              []LBRule                             `tfschema:"lb_rules"`
-	Networking           Networking                           `tfschema:"networking"`
 	NodeTypes            []NodeType                           `tfschema:"node_type"`
 	Sku                  managedcluster.SkuName               `tfschema:"sku"`
 	Tags                 map[string]interface{}               `tfschema:"tags"`
@@ -133,26 +164,112 @@ func (k ClusterResource) Arguments() map[string]*pluginsdk.Schema {
 			Optional: true,
 			Elem: &pluginsdk.Resource{
 				Schema: map[string]*pluginsdk.Schema{
-					"os_image": {
+					"data_disk_size": {
+						Type:     pluginsdk.TypeInt,
+						Required: true,
+					},
+					"multiple_placement_groups": {
+						Type:     pluginsdk.TypeBool,
+						Optional: true,
+					},
+					"name": {
 						Type:     pluginsdk.TypeString,
 						Required: true,
 					},
-					"node_count": {
+					"primary": {
+						Type:     pluginsdk.TypeBool,
+						Optional: true,
+					},
+					"stateless": {
+						Type:     pluginsdk.TypeBool,
+						Optional: true,
+					},
+					"vm_image_offer": {
+						Type:     pluginsdk.TypeString,
+						Required: true,
+					},
+					"vm_image_publisher": {
+						Type:     pluginsdk.TypeString,
+						Required: true,
+					},
+					"vm_image_sku": {
+						Type:     pluginsdk.TypeString,
+						Required: true,
+					},
+					"vm_image_version": {
+						Type:     pluginsdk.TypeString,
+						Required: true,
+					},
+					"vm_instance_count": {
 						Type:         pluginsdk.TypeInt,
 						Required:     true,
 						ValidateFunc: validation.IntBetween(3, 100),
 					},
-					"node_size": {
+					"vm_size": {
 						Type:     pluginsdk.TypeString,
 						Required: true,
-						// TODO: validate
 					},
-					"data_disk_size": {
-						Type:     pluginsdk.TypeInt,
+					"application_port_range": {
+						Type:     pluginsdk.TypeString,
 						Required: true,
-						// TODO: validate
-						// TODO: DataDiskSize is more complex than a string (maybe?)
-
+						//TODO: Add validation
+					},
+					"capacities": {
+						Type:     pluginsdk.TypeMap,
+						Optional: true,
+						Elem: &pluginsdk.Schema{
+							Type: pluginsdk.TypeString,
+						},
+					},
+					"data_disk_type": {
+						Type:     pluginsdk.TypeString,
+						Optional: true,
+						Default:  string(nodetype.DiskTypeStandardLRS),
+						ValidateFunc: validation.StringInSlice([]string{
+							string(nodetype.DiskTypeStandardLRS),
+							string(nodetype.DiskTypeStandardSSDLRS),
+							string(nodetype.DiskTypePremiumLRS),
+						}, false),
+					},
+					"ephemeral_port_range": {
+						Type:     pluginsdk.TypeString,
+						Required: true,
+						//TODO: Add validation
+					},
+					"placement_properties": {
+						Type:     pluginsdk.TypeMap,
+						Optional: true,
+						Elem: &pluginsdk.Schema{
+							Type: pluginsdk.TypeString,
+						},
+					},
+					"vm_secrets": {
+						Type:     pluginsdk.TypeSet,
+						Optional: true,
+						Elem: &pluginsdk.Resource{
+							Schema: map[string]*pluginsdk.Schema{
+								"vault_id": {
+									Type:     pluginsdk.TypeString,
+									Required: true,
+								},
+								"certificates": {
+									Type:     pluginsdk.TypeSet,
+									Required: true,
+									Elem: &pluginsdk.Resource{
+										Schema: map[string]*pluginsdk.Schema{
+											"store": {
+												Type:     pluginsdk.TypeString,
+												Required: true,
+											},
+											"url": {
+												Type:     pluginsdk.TypeString,
+												Required: true,
+											},
+										},
+									},
+								},
+							},
+						},
 					},
 				},
 			},
@@ -160,6 +277,7 @@ func (k ClusterResource) Arguments() map[string]*pluginsdk.Schema {
 		"authentication": {
 			Type:     pluginsdk.TypeList,
 			Optional: true,
+			MaxItems: 1,
 			Elem: &pluginsdk.Resource{
 				Schema: map[string]*pluginsdk.Schema{
 					"active_directory": {
@@ -325,34 +443,7 @@ func (k ClusterResource) ResourceType() string {
 func (k ClusterResource) Create() sdk.ResourceFunc {
 	return sdk.ResourceFunc{
 		Func: func(ctx context.Context, metadata sdk.ResourceMetaData) error {
-			var model ClusterResourceModel
-			if err := metadata.Decode(&model); err != nil {
-				return fmt.Errorf("decoding %+v", err)
-			}
-			ctx, cancel := timeouts.ForCreate(metadata.Client.StopContext, metadata.ResourceData)
-			defer cancel()
-
-			clusterClient := metadata.Client.ServiceFabricManaged.ManagedClusterClient
-			subscriptionId := metadata.Client.Account.SubscriptionId
-
-			managedClusterId := managedcluster.NewManagedClusterID(subscriptionId, model.ResourceGroup, model.Name)
-
-			cluster := managedcluster.ManagedCluster{
-				Location:   model.Location,
-				Name:       utils.String(model.Name),
-				Properties: expandClusterProperties(&model),
-				Sku:        &managedcluster.Sku{Name: model.Sku},
-				//Tags: tags.Expand(model.Tags),
-			}
-
-			err := clusterClient.CreateOrUpdateThenPoll(ctx, managedClusterId, cluster)
-			if err != nil {
-				return fmt.Errorf("while creating cluster %q: %+v", model.Name, err)
-			}
-
-			metadata.SetID(managedClusterId)
-
-			return nil
+			return createOrUpdate(ctx, metadata)
 		},
 		Timeout: 30 * time.Minute,
 	}
@@ -366,21 +457,34 @@ func (k ClusterResource) Read() sdk.ResourceFunc {
 				return fmt.Errorf("while parsing resourceID: %+v", err)
 			}
 			clusterClient := metadata.Client.ServiceFabricManaged.ManagedClusterClient
+			nodeTypeClient := metadata.Client.ServiceFabricManaged.NodeTypeClient
+
 			cluster, err := clusterClient.Get(ctx, *resourceId)
-
-			// Most of the resource model's data lives in the Properties
-			model := flattenClusterProperties(cluster.Model.Properties)
-
-			// fill in the rest
-			model.Name = utils.NormalizeNilableString(cluster.Model.Name)
-			model.Location = cluster.Model.Location
-			model.ResourceGroup = resourceId.ResourceGroup
-
-			if sku := cluster.Model.Sku; sku != nil {
-				model.Sku = sku.Name
+			if err != nil {
+				if response.WasNotFound(cluster.HttpResponse) {
+					return metadata.MarkAsGone(resourceId)
+				}
+				return fmt.Errorf("while reading data for cluster %q: %+v", resourceId.Name, err)
 			}
 
-			return metadata.Encode(&model)
+			nts, err := nodeTypeClient.ListByManagedClustersComplete(ctx, nodetype.ManagedClusterId{
+				SubscriptionId: resourceId.SubscriptionId,
+				ResourceGroup:  resourceId.ResourceGroup,
+				Name:           resourceId.Name,
+			})
+			if err != nil {
+				return fmt.Errorf("while listing NodeTypes for cluster %q: +%v", resourceId.Name, err)
+			}
+
+			model := flattenClusterProperties(cluster.Model)
+			// Password is read-only
+			model.Password = metadata.ResourceData.Get("password").(string)
+			model.ResourceGroup = resourceId.ResourceGroup
+			model.NodeTypes = make([]NodeType, len(nts.Items))
+			for idx, nt := range nts.Items {
+				model.NodeTypes[idx] = flattenNodetypeProperties(nt)
+			}
+			return metadata.Encode(model)
 		},
 		Timeout: 5 * time.Minute,
 	}
@@ -389,7 +493,7 @@ func (k ClusterResource) Read() sdk.ResourceFunc {
 func (k ClusterResource) Update() sdk.ResourceFunc {
 	return sdk.ResourceFunc{
 		Func: func(ctx context.Context, metadata sdk.ResourceMetaData) error {
-			return nil
+			return createOrUpdate(ctx, metadata)
 		},
 		Timeout: 30 * time.Minute,
 	}
@@ -398,6 +502,17 @@ func (k ClusterResource) Update() sdk.ResourceFunc {
 func (k ClusterResource) Delete() sdk.ResourceFunc {
 	return sdk.ResourceFunc{
 		Func: func(ctx context.Context, metadata sdk.ResourceMetaData) error {
+
+			resourceId, err := managedcluster.ParseManagedClusterID(metadata.ResourceData.Id())
+			if err != nil {
+				return fmt.Errorf("while parsing resourceID: %+v", err)
+			}
+			clusterClient := metadata.Client.ServiceFabricManaged.ManagedClusterClient
+
+			err = clusterClient.DeleteThenPoll(ctx, *resourceId)
+			if err != nil {
+				return fmt.Errorf("while deleting cluster %q: %+v", resourceId.String(), err)
+			}
 			return nil
 		},
 		Timeout: 30 * time.Minute,
@@ -408,8 +523,73 @@ func (k ClusterResource) IDValidationFunc() pluginsdk.SchemaValidateFunc {
 	return validate.ServiceFabricManagedClusterID
 }
 
-func flattenClusterProperties(properties *managedcluster.ManagedClusterProperties) *ClusterResourceModel {
+func createOrUpdate(ctx context.Context, metadata sdk.ResourceMetaData) error {
+	var model ClusterResourceModel
+	if err := metadata.Decode(&model); err != nil {
+		return fmt.Errorf("decoding %+v", err)
+	}
+	ctx, cancel := timeouts.ForCreate(metadata.Client.StopContext, metadata.ResourceData)
+	defer cancel()
+
+	clusterClient := metadata.Client.ServiceFabricManaged.ManagedClusterClient
+	nodeTypeClient := metadata.Client.ServiceFabricManaged.NodeTypeClient
+
+	subscriptionId := metadata.Client.Account.SubscriptionId
+
+	managedClusterId := managedcluster.NewManagedClusterID(subscriptionId, model.ResourceGroup, model.Name)
+	cluster := managedcluster.ManagedCluster{
+		Location:   model.Location,
+		Name:       utils.String(model.Name),
+		Properties: expandClusterProperties(&model),
+		Sku:        &managedcluster.Sku{Name: model.Sku},
+		//Tags:       tags.Expand(model.Tags),
+		// TODO: Fix tags???
+	}
+	resp, err := clusterClient.CreateOrUpdate(ctx, managedClusterId, cluster)
+	if err != nil {
+		return fmt.Errorf("while creating cluster %q: %+v", model.Name, err)
+	}
+	// Wait for the cluster creation operation to be completed
+	err = resp.Poller.PollUntilDone()
+	if err != nil {
+		return fmt.Errorf("while waiting for cluster %q to get created: : %+v", model.Name, err)
+	}
+
+	// Send all Create NodeType requests, and store all responses to a list.
+	for _, nt := range model.NodeTypes {
+		nodeTypeProperties, err := expandNodeTypeProperties(&nt)
+		if err != nil {
+			return fmt.Errorf("while expanding node type %q: %+v", nt.Name, err)
+		}
+		nodeTypeId := nodetype.NewNodeTypeID(subscriptionId, model.ResourceGroup, model.Name, nt.Name)
+		err = nodeTypeClient.CreateOrUpdateThenPoll(ctx, nodeTypeId, nodetype.NodeType{
+			Name:       nil,
+			Properties: nodeTypeProperties,
+		})
+		if err != nil {
+			return fmt.Errorf("while creating NodeType %q: %+v", nt.Name, err)
+		}
+	}
+	metadata.SetID(managedClusterId)
+	return nil
+}
+
+func flattenClusterProperties(cluster *managedcluster.ManagedCluster) *ClusterResourceModel {
 	model := &ClusterResourceModel{}
+	if cluster == nil {
+		return model
+	}
+
+	model.Name = utils.NormalizeNilableString(cluster.Name)
+	model.Location = cluster.Location
+	if sku := cluster.Sku; sku != nil {
+		model.Sku = sku.Name
+	}
+
+	properties := cluster.Properties
+	if properties == nil {
+		return model
+	}
 
 	if features := properties.AddonFeatures; features != nil {
 		for _, feature := range *features {
@@ -421,13 +601,14 @@ func flattenClusterProperties(properties *managedcluster.ManagedClusterPropertie
 		}
 	}
 	model.Username = properties.AdminUserName
-	model.Password = utils.NormalizeNilableString(properties.AdminPassword)
 
 	if aad := properties.AzureActiveDirectory; aad != nil {
-		adModel := model.Authentication.ADAuth
+
+		adModel := ADAuthentication{}
 		adModel.ClientApp = utils.NormalizeNilableString(aad.ClientApplication)
 		adModel.ClusterApp = utils.NormalizeNilableString(aad.ClusterApplication)
 		adModel.TenantId = utils.NormalizeNilableString(aad.TenantId)
+		model.Authentication[0].ADAuth = adModel
 	}
 
 	if clients := properties.Clients; clients != nil {
@@ -443,7 +624,7 @@ func flattenClusterProperties(properties *managedcluster.ManagedClusterPropertie
 				Thumbprint:      utils.NormalizeNilableString(client.Thumbprint),
 			}
 		}
-		model.Authentication.CertAuthentication = certs
+		model.Authentication[0].CertAuthentication = certs
 	}
 
 	if fss := properties.FabricSettings; fss != nil {
@@ -475,7 +656,80 @@ func flattenClusterProperties(properties *managedcluster.ManagedClusterPropertie
 		}
 	}
 
-	return nil
+	if upgradeWave := properties.ClusterUpgradeCadence; upgradeWave != nil {
+		model.UpgradeWave = *upgradeWave
+	}
+
+	return model
+}
+
+func flattenNodetypeProperties(nt nodetype.NodeType) NodeType {
+	props := nt.Properties
+	if props == nil {
+		return NodeType{Name: utils.NormalizeNilableString(nt.Name)}
+	}
+
+	//from, to, err := parsePortRange(n)
+	out := NodeType{
+		DataDiskSize:     nt.Properties.DataDiskSizeGB,
+		Name:             utils.NormalizeNilableString(nt.Name),
+		Primary:          props.IsPrimary,
+		VmImageOffer:     utils.NormalizeNilableString(props.VmImageOffer),
+		VmImagePublisher: utils.NormalizeNilableString(props.VmImagePublisher),
+		VmImageSku:       utils.NormalizeNilableString(props.VmImageSku),
+		VmImageVersion:   utils.NormalizeNilableString(props.VmImageVersion),
+		VmInstanceCount:  props.VmInstanceCount,
+		VmSize:           utils.NormalizeNilableString(props.VmSize),
+		ApplicationPorts: fmt.Sprintf("%d-%d", props.ApplicationPorts.StartPort, props.ApplicationPorts.EndPort),
+		EphemeralPorts:   fmt.Sprintf("%d-%d", props.EphemeralPorts.StartPort, props.EphemeralPorts.EndPort),
+	}
+
+	if mpg := props.MultiplePlacementGroups; mpg != nil {
+		out.MultiplePlacementGroups = *mpg
+	}
+
+	if stateless := props.IsStateless; stateless != nil {
+		out.Stateless = *stateless
+	}
+
+	if capacities := props.Capacities; capacities != nil {
+		caps := make(map[string]string)
+		for k, v := range *capacities {
+			caps[k] = v
+		}
+		out.Capacities = caps
+	}
+
+	if diskType := props.DataDiskType; diskType != nil {
+		out.DataDiskType = *diskType
+	}
+
+	if placementProps := props.PlacementProperties; placementProps != nil {
+		placements := make(map[string]string)
+		for k, v := range *placementProps {
+			placements[k] = v
+		}
+		out.PlacementProperties = placements
+	}
+
+	if secrets := props.VmSecrets; secrets != nil {
+		secs := make([]VmSecrets, len(*secrets))
+		for idx, sec := range *secrets {
+			certs := make([]VaultCertificates, len(sec.VaultCertificates))
+			for idx, cert := range sec.VaultCertificates {
+				certs[idx] = VaultCertificates{
+					Store: cert.CertificateStore,
+					Url:   cert.CertificateUrl,
+				}
+			}
+			secs[idx] = VmSecrets{
+				SourceVault:  utils.NormalizeNilableString(sec.SourceVault.Id),
+				Certificates: certs,
+			}
+		}
+		out.VmSecrets = secs
+	}
+	return out
 }
 
 func expandClusterProperties(model *ClusterResourceModel) *managedcluster.ManagedClusterProperties {
@@ -493,29 +747,29 @@ func expandClusterProperties(model *ClusterResourceModel) *managedcluster.Manage
 	out.AdminPassword = utils.String(model.Password)
 	out.AdminUserName = model.Username
 
-	adAuth := model.Authentication.ADAuth
-	if adAuth.ClientApp != "" && adAuth.ClusterApp != "" && adAuth.TenantId != "" {
-		out.AzureActiveDirectory = &managedcluster.AzureActiveDirectory{
-			ClientApplication:  utils.String(adAuth.ClientApp),
-			ClusterApplication: utils.String(adAuth.ClusterApp),
-			TenantId:           utils.String(adAuth.TenantId),
+	if auth := model.Authentication; len(auth) > 0 {
+		adAuth := auth[0].ADAuth
+		if adAuth.ClientApp != "" && adAuth.ClusterApp != "" && adAuth.TenantId != "" {
+			out.AzureActiveDirectory = &managedcluster.AzureActiveDirectory{
+				ClientApplication:  utils.String(adAuth.ClientApp),
+				ClusterApplication: utils.String(adAuth.ClusterApp),
+				TenantId:           utils.String(adAuth.TenantId),
+			}
+		}
+		if certs := auth[0].CertAuthentication; len(certs) > 0 {
+			clients := make([]managedcluster.ClientCertificate, len(certs))
+			for idx, cert := range certs {
+				clients[idx] = managedcluster.ClientCertificate{
+					CommonName: utils.String(cert.CommonName),
+					IsAdmin:    cert.CertificateType == CertTypeAdmin,
+					Thumbprint: utils.String(cert.Thumbprint),
+				}
+			}
+			out.Clients = &clients
 		}
 	}
 
 	out.ClientConnectionPort = &model.ClientConnectionPort
-
-	if certs := model.Authentication.CertAuthentication; len(certs) > 0 {
-		clients := make([]managedcluster.ClientCertificate, len(certs))
-		for idx, cert := range certs {
-			clients[idx] = managedcluster.ClientCertificate{
-				CommonName: utils.String(cert.CommonName),
-				IsAdmin:    cert.CertificateType == CertTypeAdmin,
-				Thumbprint: utils.String(cert.Thumbprint),
-			}
-		}
-		out.Clients = &clients
-	}
-
 	out.ClusterUpgradeCadence = &model.UpgradeWave
 
 	if customSettings := model.CustomFabricSettings; len(customSettings) > 0 {
@@ -570,10 +824,10 @@ func expandClusterProperties(model *ClusterResourceModel) *managedcluster.Manage
 			}
 			nsRules[idx] = managedcluster.NetworkSecurityRule{
 				Access:                     managedcluster.AccessAllow,
-				SourcePortRanges:           &[]string{"*"},
-				SourceAddressPrefixes:      &[]string{"*"},
+				SourceAddressPrefixes:      &[]string{"0.0.0.0/0"},
+				SourcePortRanges:           &[]string{"1-65535"},
 				DestinationPortRanges:      &[]string{fePortStr},
-				DestinationAddressPrefixes: &[]string{"*"},
+				DestinationAddressPrefixes: &[]string{"0.0.0.0/0"},
 				Direction:                  managedcluster.DirectionInbound,
 				Name:                       fmt.Sprintf("rule%d-allow-fe", rule.FrontendPort),
 				Priority:                   1000,
@@ -588,4 +842,74 @@ func expandClusterProperties(model *ClusterResourceModel) *managedcluster.Manage
 	out.DnsName = model.Name
 
 	return out
+}
+
+func expandNodeTypeProperties(nt *NodeType) (*nodetype.NodeTypeProperties, error) {
+	vmSecrets := make([]nodetype.VaultSecretGroup, len(nt.VmSecrets))
+	for idx, secret := range nt.VmSecrets {
+		vcs := make([]nodetype.VaultCertificate, len(secret.Certificates))
+		for cidx, cert := range secret.Certificates {
+			vcs[cidx] = nodetype.VaultCertificate{
+				CertificateStore: cert.Store,
+				CertificateUrl:   cert.Url,
+			}
+		}
+		vmSecrets[idx] = nodetype.VaultSecretGroup{
+			SourceVault:       nodetype.SubResource{Id: &secret.SourceVault},
+			VaultCertificates: vcs,
+		}
+	}
+
+	appFrom, appTo, err := parsePortRange(nt.ApplicationPorts)
+	if err != nil {
+		return nil, fmt.Errorf("while parsing application port range (%q): %+v", nt.ApplicationPorts, err)
+	}
+
+	ephemeralFrom, ephemeralTo, err := parsePortRange(nt.EphemeralPorts)
+	if err != nil {
+		return nil, fmt.Errorf("while parsing ephemeral port range (%q): %+v", nt.EphemeralPorts, err)
+	}
+	nodeTypeProperties := &nodetype.NodeTypeProperties{
+		ApplicationPorts: &nodetype.EndpointRangeDescription{
+			EndPort:   appTo,
+			StartPort: appFrom,
+		},
+		Capacities:     &nt.Capacities,
+		DataDiskSizeGB: nt.DataDiskSize,
+		DataDiskType:   &nt.DataDiskType,
+		EphemeralPorts: &nodetype.EndpointRangeDescription{
+			EndPort:   ephemeralTo,
+			StartPort: ephemeralFrom,
+		},
+		IsPrimary:               nt.Primary,
+		IsStateless:             &nt.Stateless,
+		MultiplePlacementGroups: &nt.MultiplePlacementGroups,
+		PlacementProperties:     &nt.PlacementProperties,
+		VmImageOffer:            &nt.VmImageOffer,
+		VmImagePublisher:        &nt.VmImagePublisher,
+		VmImageSku:              &nt.VmImageSku,
+		VmImageVersion:          &nt.VmImageVersion,
+		VmInstanceCount:         nt.VmInstanceCount,
+		VmSecrets:               &vmSecrets,
+		VmSize:                  &nt.VmSize,
+	}
+
+	return nodeTypeProperties, nil
+}
+
+func parsePortRange(input string) (int64, int64, error) {
+	toks := strings.Split(input, "-")
+	if len(toks) != 2 {
+		return 0, 0, fmt.Errorf("invalid port range format in string %q", input)
+	}
+	from, err := strconv.ParseInt(toks[0], 10, 32)
+	if err != nil {
+		return 0, 0, fmt.Errorf("while parsing %q as integer: %s", toks[0], err)
+	}
+
+	to, err := strconv.ParseInt(toks[1], 10, 32)
+	if err != nil {
+		return 0, 0, fmt.Errorf("while parsing %q as integer: %s", toks[1], err)
+	}
+	return from, to, nil
 }
