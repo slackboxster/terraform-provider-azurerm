@@ -542,9 +542,9 @@ func createOrUpdate(ctx context.Context, metadata sdk.ResourceMetaData) error {
 		Name:       utils.String(model.Name),
 		Properties: expandClusterProperties(&model),
 		Sku:        &managedcluster.Sku{Name: model.Sku},
-		//Tags:       tags.Expand(model.Tags),
-		// TODO: Fix tags???
+		Tags:       expandTags(metadata.ResourceData.Get("tags").(map[string]interface{})),
 	}
+
 	resp, err := clusterClient.CreateOrUpdate(ctx, managedClusterId, cluster)
 	if err != nil {
 		return fmt.Errorf("while creating cluster %q: %+v", model.Name, err)
@@ -660,6 +660,13 @@ func flattenClusterProperties(cluster *managedcluster.ManagedCluster) *ClusterRe
 		model.UpgradeWave = *upgradeWave
 	}
 
+	if t := cluster.Tags; t != nil {
+		modelTags := make(map[string]interface{})
+		for tag, value := range *t {
+			modelTags[tag] = value
+		}
+		model.Tags = modelTags
+	}
 	return model
 }
 

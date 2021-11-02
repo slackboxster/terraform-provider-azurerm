@@ -26,7 +26,9 @@ func TestAccServiceFabricManagedCluster_basic(t *testing.T) {
 		{
 			Config: r.basic(data),
 			Check: acceptance.ComposeTestCheckFunc(
-				check.That(data.ResourceName).ExistsInAzure(r)),
+				check.That(data.ResourceName).ExistsInAzure(r),
+				check.That(data.ResourceName).Key("tags.%").HasValue("1"),
+				check.That(data.ResourceName).Key("tags.Test").HasValue("value")),
 		},
 		data.ImportStep("password"),
 	})
@@ -93,6 +95,10 @@ resource "azurerm_service_fabric_managed_cluster" "test" {
     vm_image_offer = "WindowsServer"
     vm_image_version = "latest"
     vm_instance_count = 5
+  }
+
+  tags = {
+    Test = "value"
   }
 }
 `, data.RandomInteger, data.Locations.Primary, data.RandomString)
