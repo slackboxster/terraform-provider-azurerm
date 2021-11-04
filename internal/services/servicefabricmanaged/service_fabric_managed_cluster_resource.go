@@ -72,6 +72,7 @@ type VmSecrets struct {
 
 type NodeType struct {
 	DataDiskSize            int64  `tfschema:"data_disk_size"`
+	Id                      string `tfschema:"id"`
 	MultiplePlacementGroups bool   `tfschema:"multiple_placement_groups"`
 	Name                    string `tfschema:"name"`
 	Primary                 bool   `tfschema:"primary"`
@@ -105,6 +106,7 @@ var _ sdk.ResourceWithUpdate = ClusterResource{}
 type ClusterResourceModel struct {
 	BackupRestoreService bool   `tfschema:"backup_restore_service"`
 	ClientConnectionPort int64  `tfschema:"client_connection_port"`
+	DNSName              string `tfschema:"dns_name"`
 	DNSService           bool   `tfschema:"dns_service"`
 	HTTPGatewayPort      int64  `tfschema:"http_gateway_port"`
 	Location             string `tfschema:"location"`
@@ -128,6 +130,12 @@ func (k ClusterResource) Arguments() map[string]*pluginsdk.Schema {
 			Type:     pluginsdk.TypeBool,
 			Optional: true,
 		},
+		"dns_name": {
+			Type:         pluginsdk.TypeString,
+			Optional:     true,
+			Computed:     true,
+			ValidateFunc: validation.StringMatch(regexp.MustCompile(`^[a-z0-9]+(-*[a-z0-9])*$`), "The dns name of the cluster must have lowercase letters, numbers and hyphens. The first character must be a letter and the last character a letter or number"),
+		},
 		"dns_service": {
 			Type:     pluginsdk.TypeBool,
 			Optional: true,
@@ -136,6 +144,7 @@ func (k ClusterResource) Arguments() map[string]*pluginsdk.Schema {
 		"name": {
 			Type:     pluginsdk.TypeString,
 			Required: true,
+			ForceNew: true,
 			ValidateFunc: validation.All(
 				validation.StringLenBetween(4, 23),
 				validation.StringMatch(regexp.MustCompile(`^[a-z0-9]+(-*[a-z0-9])*$`), "The name of the cluster must have lowercase letters, numbers and hyphens. The first character must be a letter and the last character a letter or number")),
@@ -159,11 +168,16 @@ func (k ClusterResource) Arguments() map[string]*pluginsdk.Schema {
 			Required:     true,
 			ValidateFunc: validation.StringIsNotWhiteSpace,
 		},
+
 		"node_type": {
 			Type:     pluginsdk.TypeSet,
 			Optional: true,
 			Elem: &pluginsdk.Resource{
 				Schema: map[string]*pluginsdk.Schema{
+					"id": {
+						Type:     pluginsdk.TypeString,
+						Computed: true,
+					},
 					"data_disk_size": {
 						Type:     pluginsdk.TypeInt,
 						Required: true,
@@ -175,10 +189,12 @@ func (k ClusterResource) Arguments() map[string]*pluginsdk.Schema {
 					"name": {
 						Type:     pluginsdk.TypeString,
 						Required: true,
+						ForceNew: true,
 					},
 					"primary": {
 						Type:     pluginsdk.TypeBool,
 						Optional: true,
+						ForceNew: true,
 					},
 					"stateless": {
 						Type:     pluginsdk.TypeBool,
@@ -208,6 +224,7 @@ func (k ClusterResource) Arguments() map[string]*pluginsdk.Schema {
 					"vm_size": {
 						Type:     pluginsdk.TypeString,
 						Required: true,
+						ForceNew: true,
 					},
 					"application_port_range": {
 						Type:     pluginsdk.TypeString,
@@ -234,7 +251,6 @@ func (k ClusterResource) Arguments() map[string]*pluginsdk.Schema {
 					"ephemeral_port_range": {
 						Type:     pluginsdk.TypeString,
 						Required: true,
-						//TODO: Add validation
 					},
 					"placement_properties": {
 						Type:     pluginsdk.TypeMap,
@@ -244,7 +260,7 @@ func (k ClusterResource) Arguments() map[string]*pluginsdk.Schema {
 						},
 					},
 					"vm_secrets": {
-						Type:     pluginsdk.TypeSet,
+						Type:     pluginsdk.TypeList,
 						Optional: true,
 						Elem: &pluginsdk.Resource{
 							Schema: map[string]*pluginsdk.Schema{
@@ -253,7 +269,7 @@ func (k ClusterResource) Arguments() map[string]*pluginsdk.Schema {
 									Required: true,
 								},
 								"certificates": {
-									Type:     pluginsdk.TypeSet,
+									Type:     pluginsdk.TypeList,
 									Required: true,
 									Elem: &pluginsdk.Resource{
 										Schema: map[string]*pluginsdk.Schema{
@@ -305,7 +321,7 @@ func (k ClusterResource) Arguments() map[string]*pluginsdk.Schema {
 						},
 					},
 					"certificate": {
-						Type:     pluginsdk.TypeSet,
+						Type:     pluginsdk.TypeList,
 						Optional: true,
 						Elem: &pluginsdk.Resource{
 							Schema: map[string]*pluginsdk.Schema{
@@ -334,7 +350,7 @@ func (k ClusterResource) Arguments() map[string]*pluginsdk.Schema {
 			},
 		},
 		"custom_fabric_setting": {
-			Type:     pluginsdk.TypeSet,
+			Type:     pluginsdk.TypeList,
 			Optional: true,
 			Elem: &pluginsdk.Resource{
 				Schema: map[string]*pluginsdk.Schema{
@@ -367,7 +383,7 @@ func (k ClusterResource) Arguments() map[string]*pluginsdk.Schema {
 			ValidateFunc: validation.IntBetween(1500, 65535),
 		},
 		"lb_rules": {
-			Type:     pluginsdk.TypeSet,
+			Type:     pluginsdk.TypeList,
 			Required: true,
 			Elem: &pluginsdk.Resource{
 				Schema: map[string]*pluginsdk.Schema{
@@ -409,7 +425,8 @@ func (k ClusterResource) Arguments() map[string]*pluginsdk.Schema {
 		"sku": {
 			Type:     pluginsdk.TypeString,
 			Optional: true,
-			Default:  "free",
+			Default:  "Basic",
+			ForceNew: true,
 			ValidateFunc: validation.StringInSlice([]string{
 				string(managedcluster.SkuNameBasic),
 				string(managedcluster.SkuNameStandard),
@@ -445,7 +462,7 @@ func (k ClusterResource) Create() sdk.ResourceFunc {
 		Func: func(ctx context.Context, metadata sdk.ResourceMetaData) error {
 			return createOrUpdate(ctx, metadata)
 		},
-		Timeout: 30 * time.Minute,
+		Timeout: 90 * time.Minute,
 	}
 }
 
@@ -495,7 +512,7 @@ func (k ClusterResource) Update() sdk.ResourceFunc {
 		Func: func(ctx context.Context, metadata sdk.ResourceMetaData) error {
 			return createOrUpdate(ctx, metadata)
 		},
-		Timeout: 30 * time.Minute,
+		Timeout: 90 * time.Minute,
 	}
 }
 
@@ -515,7 +532,7 @@ func (k ClusterResource) Delete() sdk.ResourceFunc {
 			}
 			return nil
 		},
-		Timeout: 30 * time.Minute,
+		Timeout: 90 * time.Minute,
 	}
 }
 
@@ -556,20 +573,41 @@ func createOrUpdate(ctx context.Context, metadata sdk.ResourceMetaData) error {
 	}
 
 	// Send all Create NodeType requests, and store all responses to a list.
-	for _, nt := range model.NodeTypes {
+	nodeTypeResponses := make([]nodetype.CreateOrUpdateResponse, len(model.NodeTypes))
+	for idx, nt := range model.NodeTypes {
 		nodeTypeProperties, err := expandNodeTypeProperties(&nt)
 		if err != nil {
 			return fmt.Errorf("while expanding node type %q: %+v", nt.Name, err)
 		}
 		nodeTypeId := nodetype.NewNodeTypeID(subscriptionId, model.ResourceGroup, model.Name, nt.Name)
-		err = nodeTypeClient.CreateOrUpdateThenPoll(ctx, nodeTypeId, nodetype.NodeType{
+		nodeTypeInput := nodetype.NodeType{
 			Name:       nil,
 			Properties: nodeTypeProperties,
-		})
-		if err != nil {
-			return fmt.Errorf("while creating NodeType %q: %+v", nt.Name, err)
+		}
+
+		if resp, err := nodeTypeClient.CreateOrUpdate(ctx, nodeTypeId, nodeTypeInput); err == nil {
+			nodeTypeResponses[idx] = resp
+		} else {
+			return fmt.Errorf("while adding node type %q to cluster %q: %+v", nt.Name, model.Name, err)
 		}
 	}
+
+	if len(nodeTypeResponses) > 0 {
+		lastResp := nodeTypeResponses[len(model.NodeTypes)-1]
+		if err = lastResp.Poller.PollUntilDone(); err != nil {
+			return fmt.Errorf("while polling for node type %q in cluster %q: %+v", model.NodeTypes[len(model.NodeTypes)-1].Name, model.Name, err)
+		}
+
+		for idx, resp := range nodeTypeResponses {
+			if idx == len(nodeTypeResponses)-1 {
+				continue
+			}
+			if err = resp.Poller.PollUntilDone(); err != nil {
+				return fmt.Errorf("while polling for node type %q in cluster %q: %+v", model.NodeTypes[idx].Name, model.Name, err)
+			}
+		}
+	}
+
 	metadata.SetID(managedClusterId)
 	return nil
 }
@@ -590,6 +628,8 @@ func flattenClusterProperties(cluster *managedcluster.ManagedCluster) *ClusterRe
 	if properties == nil {
 		return model
 	}
+
+	model.DNSName = properties.DnsName
 
 	if features := properties.AddonFeatures; features != nil {
 		for _, feature := range *features {
@@ -689,6 +729,7 @@ func flattenNodetypeProperties(nt nodetype.NodeType) NodeType {
 		VmSize:           utils.NormalizeNilableString(props.VmSize),
 		ApplicationPorts: fmt.Sprintf("%d-%d", props.ApplicationPorts.StartPort, props.ApplicationPorts.EndPort),
 		EphemeralPorts:   fmt.Sprintf("%d-%d", props.EphemeralPorts.StartPort, props.EphemeralPorts.EndPort),
+		Id:               utils.NormalizeNilableString(nt.Id),
 	}
 
 	if mpg := props.MultiplePlacementGroups; mpg != nil {
@@ -753,6 +794,11 @@ func expandClusterProperties(model *ClusterResourceModel) *managedcluster.Manage
 
 	out.AdminPassword = utils.String(model.Password)
 	out.AdminUserName = model.Username
+
+	out.DnsName = model.Name
+	if model.DNSName != "" && model.DNSName != model.Name {
+		out.DnsName = model.DNSName
+	}
 
 	if auth := model.Authentication; len(auth) > 0 {
 		adAuth := auth[0].ADAuth
@@ -845,9 +891,6 @@ func expandClusterProperties(model *ClusterResourceModel) *managedcluster.Manage
 		out.NetworkSecurityRules = &nsRules
 
 	}
-
-	out.DnsName = model.Name
-
 	return out
 }
 
